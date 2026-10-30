@@ -1,28 +1,5 @@
 /*
- * shell.c — SHELL INTERACTIVO DE miniOS
- *
- * Este archivo implementa el prompt `miniOS>` y el parser de comandos.
- * El main loop (shell_run) y varios comandos (help, slice, inspect, runpair,
- * log) vienen ya implementados.
- *
- * Tu trabajo es implementar las CUATRO funciones marcadas con [TODO]:
- *   1. cmd_run         — validar path y lanzar proceso con el scheduler
- *   2. cmd_ps          — mostrar la process table (process status)
- *   3. cmd_kill_proc   — matar un proceso por PID
- *   4. cmd_stats       — mostrar metricas agregadas del scheduler
- *
- * Los comandos implementados (cmd_help, cmd_slice, cmd_inspect, cmd_runpair)
- * sirven como referencia de estilo, convenciones y manejo de argumentos.
- *
- * REGLAS IMPORTANTES:
- *   - Cualquier comando que LEA process_table o ready_queue debe envolverse
- *     en block_alarm() / unblock_alarm() para evitar race con scheduler_tick.
- *   - Usa las funciones auxiliares ya disponibles:
- *       pcb_print_table()  en pcb.h
- *       pcb_state_name()   en pcb.h
- *       rq_print()         en ready_queue.h
- *       rq_remove()        en ready_queue.h
- *       timer_get_slice()  en timer.h
+ * shell.c - Shell interactivo de miniOS
  */
 
 #include "shell.h"
@@ -42,7 +19,7 @@
 #define MAX_LINE 256
 
 // ============================================================
-// Helpers y comandos ya implementados — NO los modifiques
+// Helpers y comandos ya implementados
 // ============================================================
 
 // Block SIGALRM while modifying shared state
@@ -183,152 +160,141 @@ static void cmd_runpair(const char *name) {
     }
 }
 
-
 // ============================================================
-// [TODO 1/4] cmd_run
-// ------------------------------------------------------------
-// Parsea el comando `run <path> [arg]`, valida la ruta y crea
-// un proceso a traves del scheduler. Si es el primer proceso,
-// arranca el scheduler con el slice actual.
-//
-// Ejemplo de uso:
-//   miniOS> run programs/bin/countdown 10
+// 1/4 cmd_run
 // ============================================================
 static void cmd_run(const char *path, const char *arg) {
-    // Paso 1. Si path es NULL o vacio, imprimir mensaje de uso y retornar:
-    //         "Uso: run <binario> [argumento]"
+    if (path == NULL || strlen(path) == 0) {
+        printf("Uso: run <binario> [argumento]\n");
+        return;
+    }
 
-    // Paso 2. Validar que el archivo existe y es ejecutable:
-    //         access(path, X_OK) == 0. Si no, imprimir error y retornar.
+    if (access(path, X_OK) != 0) {
+        printf("Error: '%s' no existe o no es ejecutable.\n", path);
+        return;
+    }
 
-    // Paso 3. Crear el proceso:
-    //         int idx = scheduler_create_process(path, arg);
-    //         Si idx < 0, retornar (el scheduler ya imprimio el error).
+    int idx = scheduler_create_process(path, arg);
+    if (idx < 0) {
+        return;
+    }
+    printf("Proceso '%s' creado (PID %d).\n", process_table[idx].name, process_table[idx].pid);
 
-    // Paso 4. Si el scheduler NO esta corriendo Y la ready queue NO esta vacia,
-    //         arrancar el scheduler con timer_get_slice() como slice:
-    //         scheduler_start(timer_get_slice());
-
-    (void)path; (void)arg;  // silence unused while unimplemented
+    if (!scheduler_is_running() && !rq_is_empty()) {
+        scheduler_start(timer_get_slice());
+    }
 }
 
-
 // ============================================================
-// [TODO 2/4] cmd_ps
-// ------------------------------------------------------------
-// Muestra la tabla de procesos con PCBs y la ready queue.
-// Debe invocar block_alarm antes de leer la process_table y
-// unblock_alarm al terminar.
-//
-// Formato esperado (puedes usar pcb_print_table() que ya lo hace):
-//   PID    NOMBRE           ESTADO          CPU(ms) ESPERA(ms)  SWITCHES
-//   -------------------------------------------------------------------
-//   1234   countdown        RUNNING            1520.3      120.0       3
-//   1235   primos           READY              1480.5      460.1       3
-//
-// Y tras la tabla, mostrar el contenido de la ready queue usando
-// rq_print() (que imprime algo como "Ready Queue: PID 1235 -> PID 1234").
+// 2/4 cmd_ps
 // ============================================================
 static void cmd_ps(void) {
-    // Paso 1. block_alarm() para proteger la lectura de process_table.
+    block_alarm();
 
-    // Paso 2. Si process_count == 0: imprimir "No hay procesos." y retornar
-    //         (recuerda hacer unblock_alarm antes de retornar!).
+    if (process_count == 0) {
+        printf("No hay procesos.\n");
+        unblock_alarm();
+        return;
+    }
 
-    // Paso 3. Imprimir un salto de linea + llamar pcb_print_table().
+    printf("\n");
+    pcb_print_table();
+    printf("\n");
+    rq_print();
 
-    // Paso 4. Imprimir otro salto de linea + llamar rq_print().
-
-    // Paso 5. unblock_alarm() al terminar.
-    //
-    // Pista: puedes implementar esto desde cero con tu propio formato
-    // si prefieres. Los campos del PCB estan en pcb_t (ver pcb.h):
-    //   pid, name, state, cpu_time_ms, wait_time_ms, context_switches
+    unblock_alarm();
 }
 
-
 // ============================================================
-// [TODO 3/4] cmd_kill_proc
-// ------------------------------------------------------------
-// Recibe un PID como string, busca el proceso en process_table y
-// lo termina con SIGKILL. Debe remover el proceso de la ready queue
-// y marcar su PCB como PROC_TERMINATED.
-//
-// Nota: El SIGCHLD handler del scheduler recogera el proceso, pero
-// es recomendable hacer waitpid aqui tambien para liberar recursos
-// inmediatamente y que `ps` refleje el cambio al instante.
+// 3/4 cmd_kill_proc
 // ============================================================
 static void cmd_kill_proc(const char *arg) {
-    // Paso 1. Si arg es NULL o vacio, imprimir "Uso: kill <pid>" y retornar.
+    if (arg == NULL || strlen(arg) == 0) {
+        printf("Uso: kill <pid>\n");
+        return;
+    }
 
-    // Paso 2. Convertir arg a entero con atoi. Si <= 0, imprimir "PID invalido"
-    //         y retornar.
+    int target_pid = atoi(arg);
+    if (target_pid <= 0) {
+        printf("PID invalido: '%s'\n", arg);
+        return;
+    }
 
-    // Paso 3. block_alarm() para proteger la lectura/modificacion.
+    block_alarm();
 
-    // Paso 4. Buscar el PID en process_table (loop por process_count):
-    //         - Si process_table[i].pid == target_pid Y estado != PROC_TERMINATED:
-    //           a) kill(target_pid, SIGKILL);
-    //           b) waitpid(target_pid, &status, 0);  // limpiar zombie
-    //           c) process_table[i].state = PROC_TERMINATED;
-    //           d) rq_remove(i);  // sacar de la ready queue
-    //           e) imprimir "Proceso PID <pid> terminado."
-    //           f) break;
+    int found = 0;
+    for (int i = 0; i < process_count; i++) {
+        if (process_table[i].pid == target_pid &&
+            process_table[i].state != PROC_TERMINATED) {
+            found = 1;
 
-    // Paso 5. Si no se encontro, imprimir mensaje de error.
+            kill(target_pid, SIGKILL);
 
-    // Paso 6. unblock_alarm() al terminar.
+            // El handler de SIGCHLD marca TERMINATED, saca de la cola y
+            // despacha al siguiente. Esperamos (max ~500 ms) a que lo haga.
+            volatile pcb_t *p = &process_table[i];
+            for (int t = 0; t < 500 && p->state != PROC_TERMINATED; t++) {
+                usleep(1000);
+            }
 
-    (void)arg;  // silence unused while unimplemented
+            // Respaldo por si el handler no llego a correr
+            if (p->state != PROC_TERMINATED) {
+                int status;
+                waitpid(target_pid, &status, WNOHANG);
+                process_table[i].state = PROC_TERMINATED;
+                rq_remove(i);
+            }
+
+            printf("Proceso PID %d terminado.\n", target_pid);
+            break;
+        }
+    }
+
+    if (!found) {
+        printf("Error: no existe un proceso activo con PID %d.\n", target_pid);
+    }
+
+    unblock_alarm();
 }
 
-
 // ============================================================
-// [TODO 4/4] cmd_stats
-// ------------------------------------------------------------
-// Muestra metricas agregadas del scheduler:
-//   - Cantidad de procesos activos y terminados
-//   - Time slice actual
-//   - CPU total acumulado (suma de cpu_time_ms de todos)
-//   - Context switches totales
-//   - Promedios (CPU y espera) por proceso
-//
-// Formato sugerido:
-//
-//   === Estadisticas del Scheduler ===
-//     Procesos activos:      2
-//     Procesos terminados:   1
-//     Time slice actual:     500 ms
-//     CPU total acumulado:   3450.2 ms
-//     Context switches:      12
-//     Avg CPU por proceso:   1150.1 ms
-//     Avg espera:            230.5 ms
+// 4/4 cmd_stats
 // ============================================================
 static void cmd_stats(void) {
-    // Paso 1. block_alarm() para proteger la lectura.
+    block_alarm();
 
-    // Paso 2. Declarar acumuladores:
-    //         int active = 0, terminated = 0;
-    //         double total_cpu = 0, total_wait = 0;
-    //         int total_switches = 0;
+    int active = 0, terminated = 0;
+    double total_cpu = 0, total_wait = 0;
+    int total_switches = 0;
 
-    // Paso 3. Recorrer process_table sumando:
-    //         - Si state == PROC_TERMINATED: terminated++;  else active++;
-    //         - total_cpu += process_table[i].cpu_time_ms;
-    //         - total_wait += process_table[i].wait_time_ms;
-    //         - total_switches += process_table[i].context_switches;
+    for (int i = 0; i < process_count; i++) {
+        if (process_table[i].state == PROC_TERMINATED) {
+            terminated++;
+        } else {
+            active++;
+        }
+        total_cpu += process_table[i].cpu_time_ms;
+        total_wait += process_table[i].wait_time_ms;
+        total_switches += process_table[i].context_switches;
+    }
 
-    // Paso 4. Imprimir las estadisticas con los campos arriba.
-    //         Usar timer_get_slice() para el slice actual.
-    //         Si process_count > 0, imprimir tambien los promedios
-    //         (total_cpu / process_count) y (total_wait / process_count).
+    printf("\n=== Estadisticas del Scheduler ===\n");
+    printf("  Procesos activos:      %d\n", active);
+    printf("  Procesos terminados:   %d\n", terminated);
+    printf("  Time slice actual:     %d ms\n", timer_get_slice());
+    printf("  CPU total acumulado:   %.1f ms\n", total_cpu);
+    printf("  Context switches:      %d\n", total_switches);
+    if (process_count > 0) {
+        printf("  Avg CPU por proceso:   %.1f ms\n", total_cpu / process_count);
+        printf("  Avg espera:            %.1f ms\n", total_wait / process_count);
+    }
+    printf("\n");
 
-    // Paso 5. unblock_alarm().
+    unblock_alarm();
 }
 
-
 // ============================================================
-// Main loop del shell — ya implementado, NO lo modifiques
+// Main loop del shell
 // ============================================================
 void shell_run(void) {
     char line[MAX_LINE];
